@@ -1,0 +1,5 @@
+homepage: "https://github.com/kristiankroghbang/yogo-sgtm-client"
+documentation: "https://github.com/kristiankroghbang/yogo-sgtm-client#setup"
+versions:
+  - sha: HEAD
+    changeNotes: "Initial release - YOGO Booking sGTM client with poller for orders, bookings, and customers."
