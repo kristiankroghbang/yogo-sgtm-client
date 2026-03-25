@@ -32,6 +32,8 @@ The poller sends three event types:
 - **`booking`** - Class bookings with check-in/cancellation status (from `/bookings`)
 - **`new_customer`** - New registrations with booking and order history (from `/customers`)
 
+**Important: orders vs. bookings.** An order (`purchase` event) is triggered when a customer makes an actual payment - buying a membership, a class pass, or similar. A booking (`booking` event) is when a customer reserves a spot in a class. This often happens without a new payment, for example when using an existing membership or class pass. A single order (e.g. a 10-class pass) can lead to many bookings over time, each without generating a new order.
+
 All events include `user_data` (email, phone, name, address) and all raw YOGO API fields prefixed with `yogo_`.
 
 ## Setup
