@@ -22,6 +22,8 @@ YOGO API  -->  Poller (Node.js)  -->  sGTM Container  -->  GA4 / Meta CAPI / etc
 |------|-------------|
 | `template.tpl` | sGTM client template - import into GTM Server Container |
 | `poller.js` | Node.js poller - deploy on Railway, Render, Fly.io, etc. |
+| `worker.js` | Cloudflare Workers version - free tier, persistent state via KV |
+| `wrangler.toml` | Cloudflare Workers config with cron trigger |
 | `metadata.yaml` | GTM Community Template Gallery metadata |
 
 ## Events
@@ -48,7 +50,11 @@ All events include `user_data` (email, phone, name, address) and all raw YOGO AP
 
 ### 2. Deploy the poller
 
-Set these environment variables:
+Choose one of two deployment options:
+
+#### Option A: Node.js (Railway, Render, Fly.io)
+
+Set these environment variables on your hosting platform:
 
 | Variable | Required | Description |
 |----------|----------|-------------|
@@ -57,7 +63,28 @@ Set these environment variables:
 | `SGTM_SECRET` | Yes | Must match the shared secret in your sGTM client |
 | `POLL_INTERVAL` | No | Seconds between polls (default: 60) |
 
-Then deploy on any always-on host. On Railway: connect your repo and it auto-detects Node.js.
+On Railway: connect your repo and it auto-detects Node.js. Zero dependencies, runs `npm start`.
+
+#### Option B: Cloudflare Workers (free, persistent state)
+
+Recommended if you want free hosting and state that survives deploys.
+
+```bash
+# 1. Create KV namespace for state
+wrangler kv namespace create YOGO_STATE
+
+# 2. Update wrangler.toml with the KV namespace ID from step 1
+
+# 3. Set secrets
+wrangler secret put YOGO_API_KEY
+wrangler secret put SGTM_URL
+wrangler secret put SGTM_SECRET
+
+# 4. Deploy
+wrangler deploy
+```
+
+The Worker runs on a cron trigger every minute. State (cursors, seen booking IDs) is stored in KV and persists across deploys.
 
 ### 3. Create tags in sGTM
 
@@ -74,14 +101,14 @@ All YOGO fields are available as **Event Data** variables:
 - **Bookings** work differently. The YOGO `/bookings` endpoint filters by **class start time**, not when the booking was made. A narrow rolling window would miss bookings for future classes and cause duplicates when a class falls inside the window. Instead, the poller fetches a wide window (now to 30 days ahead) on every poll and deduplicates using a stored set of previously seen booking IDs. IDs for past classes are pruned automatically to prevent unbounded growth.
 - **Rate limiting** respected (100 req/min, Retry-After header)
 - **30s request timeout** via AbortController
-- **Zero dependencies** - only Node.js built-ins
+- **Zero dependencies** - Node.js version uses only built-ins, Cloudflare Workers version uses only Workers APIs + KV
 - **Shared secret** validation on every request
 
 ## Limitations
 
 - **No webhooks** - YOGO API is polling-only. ~60s delay between event and sGTM delivery.
 - **No historical backfill** - First run skips existing data by design.
-- **Ephemeral state** - Cursor stored in `/tmp`. Resets on redeploy (handled gracefully).
+- **Ephemeral state (Node.js only)** - Cursor stored in `/tmp`. Resets on redeploy (handled gracefully). The Cloudflare Workers version uses KV for persistent state.
 - **Read-only** - Cannot write back to YOGO.
 - **DKK only** - All amounts in Danish Kroner.
 - **Plan required** - YOGO Studio or Studio+App with API add-on.
