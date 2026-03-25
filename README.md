@@ -6,7 +6,11 @@ Developed by [Kristian Krogh Bang](https://kristiankroghbang.com) and [Claude 4.
 
 ## The problem
 
-YOGO's booking flow runs inside an iframe on your website. Client-side tracking cannot reach it - ad blockers, ITP, and cross-origin restrictions make reliable conversion tracking impossible. The YOGO API has no webhooks.
+YOGO's booking flow happens either via an embedded iframe/widget on your website or through a direct YOGO booking link hosted on YOGO's own domain. Since YOGO owns the booking domain, you cannot set up first-party tracking with DNS records (e.g. for Stape server-side hosting). YOGO does support web GTM installation on their booking pages, but first-party server-side tracking on the direct booking link is not possible.
+
+The YOGO API solves this by letting you extract data directly from YOGO's system. As YOGO describes it: the API lets you "extract data that you can use in your own systems, or to integrate with third-party services" - including exporting customer data to your CRM or email platform, and analyzing booking and attendance data in your BI tools.
+
+This integration takes it a step further by piping that data into sGTM in near-real-time.
 
 ## The solution
 
@@ -86,10 +90,9 @@ All YOGO fields are available as **Event Data** variables:
 ## Limitations
 
 - **No webhooks** - YOGO API is polling-only. ~60s delay between event and sGTM delivery.
-- **No historical backfill** - First run skips existing data by design.
-- **Ephemeral state** - Cursor stored in `/tmp`. Resets on redeploy (handled gracefully via first-run skip).
+- **No historical backfill by default** - First run skips existing data by design to avoid flooding sGTM. If you need historical data, you can modify the first-run logic in the poll functions or do a one-time API export.
+- **Ephemeral state** - The poller stores its cursors in `/tmp`, which resets on redeploy on platforms like Railway. This is handled gracefully - the first-run skip logic re-initializes the cursors without sending duplicate events.
 - **Read-only** - Cannot write back to YOGO.
-- **DKK only** - All amounts in Danish Kroner.
 - **Plan required** - YOGO Studio or Studio+App with API add-on.
 
 ## Use cases
@@ -104,7 +107,6 @@ All YOGO fields are available as **Event Data** variables:
 
 - [YOGO API Documentation](https://docs.api.yogobooking.com)
 - [sGTM Client Templates Guide](https://developers.google.com/tag-platform/tag-manager/server-side/api)
-- [Blog post: Building server-side tracking for YOGO](https://kristiankroghbang.com)
 
 ## License
 
