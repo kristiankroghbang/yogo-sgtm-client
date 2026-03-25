@@ -1,0 +1,27 @@
+{
+  "name": "yogo-sgtm-poller",
+  "version": "1.0.0",
+  "description": "Polls the YOGO Booking API and sends events to server-side Google Tag Manager",
+  "main": "poller.js",
+  "scripts": {
+    "start": "node poller.js"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "keywords": [
+    "yogo",
+    "sgtm",
+    "google-tag-manager",
+    "server-side",
+    "booking",
+    "analytics",
+    "tracking"
+  ],
+  "author": "Kristian Krogh Bang",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/kristiankroghbang/yogo-sgtm-client"
+  }
+}
