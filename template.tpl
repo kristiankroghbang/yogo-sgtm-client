@@ -13,6 +13,10 @@ ___INFO___
   "description": "Receives events from a YOGO API poller (purchase, booking, new_customer) and passes all data as-is to the server-side GTM container. Built for the YOGO Booking API (yogobooking.com). Developed by Kristian Krogh Bang and Claude 4.6.",
   "containerContexts": [
     "SERVER"
+  ],
+  "categories": [
+    "ANALYTICS",
+    "CONVERSIONS"
   ]
 }
 
