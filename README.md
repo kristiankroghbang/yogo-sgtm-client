@@ -68,7 +68,7 @@ On Railway: connect your repo and it auto-detects Node.js. Zero dependencies, ru
 
 #### Option B: Cloudflare Workers (free, persistent state)
 
-Recommended if you want free hosting and state that survives deploys.
+**Note:** As of March 2026, the YOGO API has a TLS certificate mismatch (certificate covers `*.yogo.dk` but the API domain is `api.yogobooking.com`). Cloudflare Workers enforce strict TLS validation with no override option, which means this version will return a 526 error when calling the YOGO API. The code is ready to use once YOGO fixes their certificate. Use the Node.js version (Option A) in the meantime.
 
 ```bash
 # 1. Create KV namespace for state
