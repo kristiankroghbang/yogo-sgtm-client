@@ -1,6 +1,6 @@
 # YOGO Booking - sGTM Integration
 
-Server-side Google Tag Manager integration for the [YOGO Booking API](https://api-docs.yogo.dk). Polls all three YOGO API endpoints and sends events to your sGTM container in real time.
+Server-side Google Tag Manager integration for the [YOGO Booking API](https://docs.api.yogobooking.com). Polls all three YOGO API endpoints and sends events to your sGTM container in real time.
 
 **Developed by [Kristian Krogh Bang](https://kristiankroghbang.com) and Claude 4.6.**
 
@@ -223,7 +223,7 @@ This integration covers all three endpoints of the YOGO API:
 | `/bookings` | GET | Cursor (composite) | `from`, `to`, `bookingType`, `includeCancelled`, `expand`, `limit`, `after` |
 | `/orders` | GET | Cursor (numeric ID) | `expand`, `limit`, `after` |
 
-Full API documentation: [YOGO API Docs](https://api-docs.yogo.dk)
+Full API documentation: [YOGO API Docs](https://docs.api.yogobooking.com)
 
 ## License
 
