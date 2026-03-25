@@ -68,9 +68,9 @@ All YOGO fields are available as **Event Data** variables:
 
 ## How it works
 
-- **Cursor-based pagination** per YOGO API docs (numeric ID for orders/customers, composite for bookings)
+- **Orders and customers** use cursor-based pagination (numeric ID). The poller stores the last seen ID and only fetches records after it. On first run, existing records are skipped to prevent flooding sGTM with historical data.
+- **Bookings** work differently. The YOGO `/bookings` endpoint filters by **class start time**, not when the booking was made. A narrow rolling window would miss bookings for future classes and cause duplicates when a class falls inside the window. Instead, the poller fetches a wide window (now to 30 days ahead) on every poll and deduplicates using a stored set of previously seen booking IDs. IDs for past classes are pruned automatically to prevent unbounded growth.
 - **Rate limiting** respected (100 req/min, Retry-After header)
-- **First run** skips existing data to prevent flooding sGTM with historical events
 - **30s request timeout** via AbortController
 - **Zero dependencies** - only Node.js built-ins
 - **Shared secret** validation on every request

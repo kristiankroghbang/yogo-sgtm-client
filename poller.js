@@ -38,6 +38,7 @@ const POLL_INTERVAL = parseInt(process.env.POLL_INTERVAL || '60', 10) * 1000;
 const STATE_FILE = path.join('/tmp', 'yogo-poller-state.json');
 const BASE_URL = 'https://api.yogobooking.com';
 const FETCH_TIMEOUT_MS = 30000;
+const BOOKING_WINDOW_DAYS = 30;
 
 // --- Startup validation - fail fast if misconfigured ---
 function validateEnv() {
@@ -59,7 +60,7 @@ function loadState() {
     return {
       lastOrderId: null,
       lastCustomerId: null,
-      lastBookingPollTime: null
+      seenBookingIds: []
     };
   }
 }
@@ -414,32 +415,39 @@ async function pollCustomers(state) {
 }
 
 // --- Poll bookings ---
+// NOTE: The YOGO /bookings endpoint filters by CLASS start time, not by when
+// the booking was made. A narrow rolling window would miss most bookings and
+// cause duplicates when a class falls inside the window. Instead, we fetch a
+// wide window (today -> 30 days ahead) on every poll and deduplicate using a
+// set of previously seen booking IDs stored in state.
 async function pollBookings(state) {
   const now = new Date();
-  const isFirstRun = state.lastBookingPollTime === null;
+  const future = new Date(now.getTime() + BOOKING_WINDOW_DAYS * 24 * 60 * 60 * 1000);
+  const seenSet = new Set(state.seenBookingIds || []);
 
-  if (isFirstRun) {
-    state.lastBookingPollTime = now.toISOString();
-    console.log('[bookings] First run: setting start time. Polling from now on.');
-    return;
-  }
+  console.log('[bookings] Polling classes from ' + now.toISOString() + ' to ' + future.toISOString() + ' (seen: ' + seenSet.size + ' bookings)...');
 
-  const from = new Date(state.lastBookingPollTime);
-  console.log('[bookings] Polling from ' + from.toISOString() + ' to ' + now.toISOString() + '...');
-
-  const bookings = await fetchBookings(from, now);
+  const bookings = await fetchBookings(now, future);
   if (!bookings.length) {
-    console.log('[bookings] No new bookings.');
-    state.lastBookingPollTime = now.toISOString();
+    console.log('[bookings] No bookings found in window.');
     return;
   }
 
-  console.log('[bookings] Found ' + bookings.length + ' bookings.');
+  // Filter out bookings we have already sent to sGTM
+  const newBookings = bookings.filter(b => !seenSet.has(b.id));
 
-  for (const booking of bookings) {
+  if (!newBookings.length) {
+    console.log('[bookings] ' + bookings.length + ' bookings in window, all already seen.');
+    return;
+  }
+
+  console.log('[bookings] Found ' + newBookings.length + ' new bookings (of ' + bookings.length + ' total in window).');
+
+  for (const booking of newBookings) {
     const event = mapBookingToEvent(booking);
     try {
       await sendToSgtm(event);
+      seenSet.add(booking.id);
       const status = booking.cancelledAt ? 'CANCELLED' : (booking.checkedInAt ? 'CHECKED-IN' : 'BOOKED');
       console.log('[bookings] Sent booking ' + booking.id + ' (' + (event.yogo_class_name || 'unknown') + ', ' + status + ') to sGTM');
     } catch (err) {
@@ -447,8 +455,12 @@ async function pollBookings(state) {
     }
   }
 
-  state.lastBookingPollTime = now.toISOString();
-  console.log('[bookings] Poll time updated: ' + now.toISOString());
+  // Keep only IDs for bookings still in the window to prevent unbounded growth.
+  // Bookings for past classes are dropped from the set since they will no longer
+  // appear in future API responses anyway.
+  const activeIds = new Set(bookings.map(b => b.id));
+  state.seenBookingIds = [...seenSet].filter(id => activeIds.has(id));
+  console.log('[bookings] Tracking ' + state.seenBookingIds.length + ' seen booking IDs.');
 }
 
 // --- Main poll loop ---
