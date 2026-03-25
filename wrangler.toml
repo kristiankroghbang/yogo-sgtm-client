@@ -16,3 +16,8 @@ id = "YOUR_KV_NAMESPACE_ID"
 #   wrangler secret put YOGO_API_KEY
 #   wrangler secret put SGTM_URL
 #   wrangler secret put SGTM_SECRET
+
+# Optional: skip paginating historical data on first run
+# Recommended for studios with many existing records
+[vars]
+SKIP_INITIAL = "true"

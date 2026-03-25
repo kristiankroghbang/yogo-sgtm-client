@@ -39,6 +39,7 @@ const STATE_FILE = path.join('/tmp', 'yogo-poller-state.json');
 const BASE_URL = 'https://api.yogobooking.com';
 const FETCH_TIMEOUT_MS = 30000;
 const BOOKING_WINDOW_DAYS = 30;
+const SKIP_INITIAL = process.env.SKIP_INITIAL === 'true';
 
 // --- Startup validation - fail fast if misconfigured ---
 function validateEnv() {
@@ -476,6 +477,18 @@ async function pollBookings(state) {
 // --- Main poll loop ---
 async function poll() {
   const state = loadState();
+
+  // SKIP_INITIAL: If set and state is empty, mark as initialized without
+  // fetching any historical data. Avoids paginating through thousands of
+  // records on first run. Safe to leave set - only applies when state has no cursors.
+  if (SKIP_INITIAL && state.lastOrderId === null) {
+    state.lastOrderId = 0;
+    state.lastCustomerId = 0;
+    state.seenBookingIds = ['_initialized'];
+    saveState(state);
+    console.log('[init] SKIP_INITIAL: state initialized. Will only capture new events from next poll.');
+    return;
+  }
 
   try {
     await pollOrders(state);

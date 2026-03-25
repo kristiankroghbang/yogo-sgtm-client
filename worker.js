@@ -404,6 +404,19 @@ export default {
   async scheduled(event, env, ctx) {
     var state = await loadState(env.YOGO_STATE);
 
+    // SKIP_INITIAL: If set and state is empty, mark as initialized without
+    // fetching any historical data. This avoids paginating through thousands
+    // of records on first run, which can exceed CF Workers subrequest limits.
+    // Safe to leave set - only applies when state has no cursors.
+    if (env.SKIP_INITIAL === 'true' && state.lastOrderId === null) {
+      state.lastOrderId = 0;
+      state.lastCustomerId = 0;
+      state.seenBookingIds = ['_initialized'];
+      await saveState(env.YOGO_STATE, state);
+      console.log('[init] SKIP_INITIAL: state initialized. Will only capture new events from next poll.');
+      return;
+    }
+
     try { await pollOrders(state, env); }
     catch (err) { console.error('[orders] Poll error:', err.message); }
 

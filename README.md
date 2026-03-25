@@ -62,6 +62,7 @@ Set these environment variables on your hosting platform:
 | `SGTM_URL` | Yes | Your sGTM base URL (e.g. `https://sst.yourdomain.com`) |
 | `SGTM_SECRET` | Yes | Must match the shared secret in your sGTM client |
 | `POLL_INTERVAL` | No | Seconds between polls (default: 60) |
+| `SKIP_INITIAL` | No | Set to `true` to skip historical data on first run. Recommended for studios with many existing records. |
 
 On Railway: connect your repo and it auto-detects Node.js. Zero dependencies, runs `npm start`.
 
