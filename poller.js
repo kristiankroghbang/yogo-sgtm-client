@@ -433,6 +433,16 @@ async function pollBookings(state) {
     return;
   }
 
+  var isFirstRun = seenSet.size === 0;
+
+  // First run: save all existing booking IDs without sending to sGTM.
+  // Same logic as orders/customers - prevents flooding sGTM with historical data.
+  if (isFirstRun) {
+    state.seenBookingIds = bookings.map(b => b.id);
+    console.log('[bookings] First run: skipping ' + bookings.length + ' existing bookings.');
+    return;
+  }
+
   // Filter out bookings we have already sent to sGTM
   const newBookings = bookings.filter(b => !seenSet.has(b.id));
 
