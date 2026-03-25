@@ -6,7 +6,7 @@ ___INFO___
   "version": 1,
   "securityGroups": [],
   "displayName": "YOGO Booking - sGTM Client",
-  "description": "Receives events from a YOGO API poller and passes all data as-is to the sGTM container.",
+  "description": "Receives events from a YOGO API poller (purchase, booking, new_customer) and passes all data as-is to the sGTM container. Developed by Kristian Krogh Bang.",
   "containerContexts": [
     "SERVER"
   ]
@@ -147,6 +147,48 @@ ___SERVER_PERMISSIONS___
   {
     "instance": {
       "key": {
+        "publicId": "access_response",
+        "versionId": "1"
+      },
+      "param": [
+        {
+          "key": "writeResponseAccess",
+          "value": {
+            "type": 1,
+            "string": "any"
+          }
+        },
+        {
+          "key": "writeHeaderAccess",
+          "value": {
+            "type": 1,
+            "string": "any"
+          }
+        },
+        {
+          "key": "writeStatusAccess",
+          "value": {
+            "type": 1,
+            "string": "any"
+          }
+        },
+        {
+          "key": "writeBodyAccess",
+          "value": {
+            "type": 1,
+            "string": "any"
+          }
+        }
+      ]
+    },
+    "clientAnnotations": {
+      "isEditedByUser": true
+    },
+    "isRequired": true
+  },
+  {
+    "instance": {
+      "key": {
         "publicId": "return_response",
         "versionId": "1"
       }
@@ -179,7 +221,7 @@ ___SERVER_PERMISSIONS___
           "key": "environments",
           "value": {
             "type": 1,
-            "string": "all"
+            "string": "debug"
           }
         }
       ]
