@@ -464,13 +464,15 @@ async function pollBookings(state) {
 
   for (const booking of newBookings) {
     const event = mapBookingToEvent(booking);
+    // Always mark as seen to prevent infinite retry loops.
+    // Failed sends are logged but not retried every poll cycle.
+    seenSet.add(booking.id);
     try {
       await sendToSgtm(event);
-      seenSet.add(booking.id);
       const status = booking.cancelledAt ? 'CANCELLED' : (booking.checkedInAt ? 'CHECKED-IN' : 'BOOKED');
       console.log('[bookings] Sent booking ' + booking.id + ' (' + (event.yogo_class_name || 'unknown') + ', ' + status + ') to sGTM');
     } catch (err) {
-      console.error('[bookings] Error sending booking ' + booking.id + ':', err.message);
+      console.error('[bookings] Error sending booking ' + booking.id + ' (marked as seen, will not retry):', err.message);
     }
   }
 
