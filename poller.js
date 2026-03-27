@@ -434,11 +434,15 @@ async function pollBookings(state) {
     return;
   }
 
-  var isFirstRun = seenSet.size === 0;
+  // Treat as first run if the set is empty OR if it only contains the
+  // SKIP_INITIAL sentinel '_initialized' (which never matches real booking IDs
+  // and would cause ALL bookings to be sent as "new").
+  var isFirstRun = seenSet.size === 0 || (seenSet.size === 1 && seenSet.has('_initialized'));
 
   // First run: save all existing booking IDs without sending to sGTM.
   // Same logic as orders/customers - prevents flooding sGTM with historical data.
   if (isFirstRun) {
+    seenSet.clear();
     state.seenBookingIds = bookings.map(b => b.id);
     console.log('[bookings] First run: skipping ' + bookings.length + ' existing bookings.');
     return;

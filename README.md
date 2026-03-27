@@ -67,7 +67,7 @@ Set these environment variables:
 | `SGTM_URL` | Yes | Your sGTM base URL (e.g. `https://sst.yourdomain.com`) |
 | `SGTM_SECRET` | Yes | Must match the shared secret in your sGTM client |
 | `POLL_INTERVAL` | No | Seconds between polls (default: 60) |
-| `SKIP_INITIAL` | No | Set to `true` to skip historical data on first run. Recommended for studios with many existing records. |
+| `SKIP_INITIAL` | No | Set to `true` to skip paginating through historical data on first run. The poller will still fetch current bookings to build its deduplication set, but won't send them to sGTM. Recommended for studios with many existing records. |
 
 ### 3. Create tags in sGTM
 
