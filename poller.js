@@ -346,10 +346,12 @@ async function sendToSgtm(eventData) {
 
 // --- Poll orders ---
 async function pollOrders(state) {
-  const isFirstRun = state.lastOrderId === null;
+  // Treat 0 as first run too - SKIP_INITIAL sets lastOrderId=0 which would
+  // otherwise fetch all orders via ?after=0 and send them all to sGTM.
+  const isFirstRun = state.lastOrderId === null || state.lastOrderId === 0;
   console.log('[orders] Polling... (cursor: ' + (state.lastOrderId || 'none') + (isFirstRun ? ' - FIRST RUN' : '') + ')');
 
-  const orders = await fetchOrders(state.lastOrderId);
+  const orders = await fetchOrders(isFirstRun ? null : state.lastOrderId);
   if (!orders.length) {
     console.log('[orders] No new orders.');
     return;
@@ -382,10 +384,12 @@ async function pollOrders(state) {
 
 // --- Poll customers ---
 async function pollCustomers(state) {
-  const isFirstRun = state.lastCustomerId === null;
+  // Treat 0 as first run too - SKIP_INITIAL sets lastCustomerId=0 which would
+  // otherwise fetch all customers via ?after=0 and send them all to sGTM.
+  const isFirstRun = state.lastCustomerId === null || state.lastCustomerId === 0;
   console.log('[customers] Polling... (cursor: ' + (state.lastCustomerId || 'none') + (isFirstRun ? ' - FIRST RUN' : '') + ')');
 
-  const customers = await fetchCustomers(state.lastCustomerId);
+  const customers = await fetchCustomers(isFirstRun ? null : state.lastCustomerId);
   if (!customers.length) {
     console.log('[customers] No new customers.');
     return;
