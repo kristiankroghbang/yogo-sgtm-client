@@ -149,67 +149,108 @@ async function fetchBookings(from, to) {
   return fetchPaginated(url);
 }
 
-// --- Map a YOGO order to sGTM event ---
-// All fields from the YOGO API /orders docs are included
+// --- Shared helper: build GA4 user_data block (Enhanced Conversions / Customer Match) ---
+// Downstream sGTM tags hash and transform this into vendor-specific shapes
+// (Google Ads, Meta CAPI, etc.). Raw PII here is intentional - hashing happens
+// at the sGTM tag boundary so each vendor gets the format it expects.
+function buildUserData(customer) {
+  return {
+    email_address: customer.email || null,
+    phone_number: customer.phone ? customer.phone.replace(/\s/g, '') : null,
+    first_name: customer.firstName || null,
+    last_name: customer.lastName || null,
+    address: {
+      address1: customer.address1 || null,
+      address2: customer.address2 || null,
+      city: customer.city || null,
+      postal_code: customer.zipCode || null,
+      country: customer.country || 'DK'
+    }
+  };
+}
+
+// Round to 2 decimals (avoid float drift from proportional discount allocation).
+function round2(n) {
+  return Math.round(n * 100) / 100;
+}
+
+// YOGO encodes order-level discount codes as orderItems with name
+// 'Rabatkode: "<code>".' and a negative price. Pull the code out so we can
+// send it event-level (GA4 `coupon` field) instead of leaving it in items.
+function extractCoupon(orderItems) {
+  for (const item of orderItems) {
+    const match = item.name && item.name.match(/Rabatkode:\s*"([^"]+)"/i);
+    if (match) {
+      return match[1];
+    }
+  }
+  return null;
+}
+
+function isCouponLine(item) {
+  return !!(item.name && /Rabatkode:\s*"[^"]+"/i.test(item.name));
+}
+
+// --- Map a YOGO order to GA4 purchase event ---
+// GA4 spec: https://developers.google.com/analytics/devguides/collection/ga4/reference/events#purchase
 function mapOrderToEvent(order) {
   const customer = order.customer || {};
-  const items = (order.orderItems || []).map((item) => ({
-    item_id: String(item.id),
-    item_name: item.name,
-    price: item.unitPriceInclVat,
-    quantity: item.quantity,
-    orderId: item.orderId,
-    unitPriceExclVat: item.unitPriceExclVat,
-    unitPriceInclVat: item.unitPriceInclVat,
-    unitVatAmount: item.unitVatAmount,
-    totalPriceExclVat: item.totalPriceExclVat,
-    totalPriceInclVat: item.totalPriceInclVat,
-    totalVatAmount: item.totalVatAmount
-  }));
+  const rawItems = order.orderItems || [];
 
-  return {
+  // Split the coupon line out of items; surface it as event-level `coupon`.
+  const couponCode = extractCoupon(rawItems);
+  const productItems = rawItems.filter(function (i) { return !isCouponLine(i); });
+  const totalDiscount = rawItems
+    .filter(isCouponLine)
+    .reduce(function (sum, i) { return sum + Math.abs(i.totalPriceInclVat || 0); }, 0);
+
+  // Allocate the discount proportionally across product items so GA4's
+  // per-item `discount` reporting reflects which items were discounted.
+  const productSubtotal = productItems.reduce(function (sum, i) {
+    return sum + (i.totalPriceInclVat || 0);
+  }, 0);
+
+  const items = productItems.map(function (item) {
+    const qty = item.quantity || 1;
+    const lineRevenue = item.totalPriceInclVat || 0;
+    const lineDiscount = (productSubtotal > 0 && totalDiscount > 0)
+      ? (lineRevenue / productSubtotal) * totalDiscount
+      : 0;
+    const unitDiscount = lineDiscount / qty;
+    const ga4Item = {
+      item_id: String(item.id),
+      item_name: item.name,
+      price: round2((item.unitPriceInclVat || 0) - unitDiscount),
+      quantity: qty
+    };
+    if (unitDiscount > 0) ga4Item.discount = round2(unitDiscount);
+    if (couponCode) ga4Item.coupon = couponCode;
+    return ga4Item;
+  });
+
+  const event = {
     event_name: 'purchase',
+    source: 'yogo_api',
     transaction_id: String(order.invoiceNumber || order.id),
     value: order.totalAmountInclVat,
     currency: 'DKK',
     tax: order.totalVatAmount,
-    items,
-    user_data: {
-      email_address: customer.email || null,
-      phone_number: customer.phone ? customer.phone.replace(/\s/g, '') : null,
-      first_name: customer.firstName || null,
-      last_name: customer.lastName || null,
-      address: {
-        address1: customer.address1 || null,
-        address2: customer.address2 || null,
-        city: customer.city || null,
-        postal_code: customer.zipCode || null,
-        country: customer.country || 'DK'
-      }
-    },
-    source: 'yogo_api',
+    items: items,
+    user_id: customer.id ? String(customer.id) : (order.customerId ? String(order.customerId) : null),
+    user_data: buildUserData(customer),
     yogo_order_id: order.id,
     yogo_invoice_number: order.invoiceNumber,
-    yogo_customer_id: order.customerId,
     yogo_total_excl_vat: order.totalAmountExclVat,
-    yogo_total_incl_vat: order.totalAmountInclVat,
-    yogo_total_vat: order.totalVatAmount,
     yogo_paid_at: order.paidAt,
-    yogo_customer_first_name: customer.firstName,
-    yogo_customer_last_name: customer.lastName,
-    yogo_customer_email: customer.email,
-    yogo_customer_phone: customer.phone,
-    yogo_customer_address1: customer.address1,
-    yogo_customer_address2: customer.address2,
-    yogo_customer_zip: customer.zipCode,
-    yogo_customer_city: customer.city,
-    yogo_customer_country: customer.country,
     yogo_customer_created_at: customer.createdAt
   };
+
+  if (couponCode) event.coupon = couponCode;
+
+  return event;
 }
 
-// --- Map a YOGO booking to sGTM event ---
-// All fields from the YOGO API /bookings docs are included
+// --- Map a YOGO booking to sGTM booking event ---
 function mapBookingToEvent(booking) {
   const cls = booking.class || {};
   const customer = booking.customer || {};
@@ -217,10 +258,11 @@ function mapBookingToEvent(booking) {
   return {
     event_name: 'booking',
     source: 'yogo_api',
+    user_id: customer.id ? String(customer.id) : (booking.customerId ? String(booking.customerId) : null),
+    user_data: buildUserData(customer),
     yogo_booking_id: booking.id,
     yogo_booking_type: booking.bookingType,
     yogo_class_id: booking.classId,
-    yogo_customer_id: booking.customerId,
     yogo_booked_at: booking.bookedAt,
     yogo_checked_in_at: booking.checkedInAt,
     yogo_cancelled_at: booking.cancelledAt,
@@ -228,94 +270,69 @@ function mapBookingToEvent(booking) {
     yogo_class_starts_at: cls.startsAt,
     yogo_class_ends_at: cls.endsAt,
     yogo_class_is_cancelled: cls.isCancelled,
-    user_data: {
-      email_address: customer.email || null,
-      phone_number: customer.phone ? customer.phone.replace(/\s/g, '') : null,
-      first_name: customer.firstName || null,
-      last_name: customer.lastName || null,
-      address: {
-        address1: customer.address1 || null,
-        address2: customer.address2 || null,
-        city: customer.city || null,
-        postal_code: customer.zipCode || null,
-        country: customer.country || 'DK'
-      }
-    },
-    yogo_customer_first_name: customer.firstName,
-    yogo_customer_last_name: customer.lastName,
-    yogo_customer_email: customer.email,
-    yogo_customer_phone: customer.phone,
-    yogo_customer_address1: customer.address1,
-    yogo_customer_address2: customer.address2,
-    yogo_customer_zip: customer.zipCode,
-    yogo_customer_city: customer.city,
-    yogo_customer_country: customer.country,
     yogo_customer_created_at: customer.createdAt
   };
 }
 
-// --- Map a YOGO customer to sGTM event ---
-// All fields from the YOGO API /customers docs are included
+// --- Map a YOGO customer to sGTM new_customer event ---
 function mapCustomerToEvent(customer) {
-  const bookings = (customer.bookings || []).map((b) => ({
-    yogo_booking_id: b.id,
-    yogo_booking_type: b.bookingType,
-    yogo_class_id: b.classId,
-    yogo_booked_at: b.bookedAt,
-    yogo_checked_in_at: b.checkedInAt,
-    yogo_cancelled_at: b.cancelledAt,
-    yogo_class_name: b.class ? b.class.className : null,
-    yogo_class_starts_at: b.class ? b.class.startsAt : null,
-    yogo_class_ends_at: b.class ? b.class.endsAt : null
-  }));
+  const bookings = (customer.bookings || []).map(function (b) {
+    return {
+      yogo_booking_id: b.id,
+      yogo_booking_type: b.bookingType,
+      yogo_class_id: b.classId,
+      yogo_booked_at: b.bookedAt,
+      yogo_checked_in_at: b.checkedInAt,
+      yogo_cancelled_at: b.cancelledAt,
+      yogo_class_name: b.class ? b.class.className : null,
+      yogo_class_starts_at: b.class ? b.class.startsAt : null,
+      yogo_class_ends_at: b.class ? b.class.endsAt : null
+    };
+  });
 
-  const orders = (customer.orders || []).map((o) => ({
-    yogo_order_id: o.id,
-    yogo_invoice_number: o.invoiceNumber,
-    yogo_total_excl_vat: o.totalAmountExclVat,
-    yogo_total_incl_vat: o.totalAmountInclVat,
-    yogo_total_vat: o.totalVatAmount,
-    yogo_paid_at: o.paidAt,
-    items: (o.orderItems || []).map((item) => ({
-      item_id: String(item.id),
-      item_name: item.name,
-      quantity: item.quantity,
-      orderId: item.orderId,
-      unitPriceExclVat: item.unitPriceExclVat,
-      unitPriceInclVat: item.unitPriceInclVat,
-      unitVatAmount: item.unitVatAmount,
-      totalPriceExclVat: item.totalPriceExclVat,
-      totalPriceInclVat: item.totalPriceInclVat,
-      totalVatAmount: item.totalVatAmount
-    }))
-  }));
+  const orders = (customer.orders || []).map(function (o) {
+    const rawItems = o.orderItems || [];
+    const couponCode = extractCoupon(rawItems);
+    const productItems = rawItems.filter(function (i) { return !isCouponLine(i); });
+    const totalDiscount = rawItems
+      .filter(isCouponLine)
+      .reduce(function (sum, i) { return sum + Math.abs(i.totalPriceInclVat || 0); }, 0);
+    const productSubtotal = productItems.reduce(function (sum, i) {
+      return sum + (i.totalPriceInclVat || 0);
+    }, 0);
+
+    const orderObj = {
+      yogo_order_id: o.id,
+      yogo_invoice_number: o.invoiceNumber,
+      yogo_total_excl_vat: o.totalAmountExclVat,
+      yogo_paid_at: o.paidAt,
+      items: productItems.map(function (item) {
+        const qty = item.quantity || 1;
+        const lineRevenue = item.totalPriceInclVat || 0;
+        const lineDiscount = (productSubtotal > 0 && totalDiscount > 0)
+          ? (lineRevenue / productSubtotal) * totalDiscount
+          : 0;
+        const unitDiscount = lineDiscount / qty;
+        const ga4Item = {
+          item_id: String(item.id),
+          item_name: item.name,
+          price: round2((item.unitPriceInclVat || 0) - unitDiscount),
+          quantity: qty
+        };
+        if (unitDiscount > 0) ga4Item.discount = round2(unitDiscount);
+        if (couponCode) ga4Item.coupon = couponCode;
+        return ga4Item;
+      })
+    };
+    if (couponCode) orderObj.coupon = couponCode;
+    return orderObj;
+  });
 
   return {
     event_name: 'new_customer',
     source: 'yogo_api',
-    yogo_customer_id: customer.id,
-    user_data: {
-      email_address: customer.email || null,
-      phone_number: customer.phone ? customer.phone.replace(/\s/g, '') : null,
-      first_name: customer.firstName || null,
-      last_name: customer.lastName || null,
-      address: {
-        address1: customer.address1 || null,
-        address2: customer.address2 || null,
-        city: customer.city || null,
-        postal_code: customer.zipCode || null,
-        country: customer.country || 'DK'
-      }
-    },
-    yogo_customer_first_name: customer.firstName,
-    yogo_customer_last_name: customer.lastName,
-    yogo_customer_email: customer.email,
-    yogo_customer_phone: customer.phone,
-    yogo_customer_address1: customer.address1,
-    yogo_customer_address2: customer.address2,
-    yogo_customer_zip: customer.zipCode,
-    yogo_customer_city: customer.city,
-    yogo_customer_country: customer.country,
+    user_id: customer.id ? String(customer.id) : null,
+    user_data: buildUserData(customer),
     yogo_customer_created_at: customer.createdAt,
     yogo_bookings: bookings,
     yogo_orders: orders,
