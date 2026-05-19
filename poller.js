@@ -351,7 +351,20 @@ async function pollOrders(state) {
   const isFirstRun = state.lastOrderId === null || state.lastOrderId === 0;
   console.log('[orders] Polling... (cursor: ' + (state.lastOrderId || 'none') + (isFirstRun ? ' - FIRST RUN' : '') + ')');
 
-  const orders = await fetchOrders(isFirstRun ? null : state.lastOrderId);
+  // YOGO returns 422 INVALID_CURSOR if the cursor ID no longer exists
+  // (e.g. order deleted). Reset to null - next poll runs as first-run,
+  // walks to latest ID, and skips historical events.
+  let orders;
+  try {
+    orders = await fetchOrders(isFirstRun ? null : state.lastOrderId);
+  } catch (err) {
+    if (err.message && err.message.includes('INVALID_CURSOR')) {
+      console.warn('[orders] Cursor ' + state.lastOrderId + ' is invalid - resetting to null (next poll = first-run).');
+      state.lastOrderId = null;
+      return;
+    }
+    throw err;
+  }
   if (!orders.length) {
     console.log('[orders] No new orders.');
     return;
@@ -389,7 +402,20 @@ async function pollCustomers(state) {
   const isFirstRun = state.lastCustomerId === null || state.lastCustomerId === 0;
   console.log('[customers] Polling... (cursor: ' + (state.lastCustomerId || 'none') + (isFirstRun ? ' - FIRST RUN' : '') + ')');
 
-  const customers = await fetchCustomers(isFirstRun ? null : state.lastCustomerId);
+  // YOGO returns 422 INVALID_CURSOR if the cursor ID no longer exists
+  // (e.g. customer deleted/GDPR-anonymized). Reset to null - next poll runs
+  // as first-run, walks to latest ID, and skips historical events.
+  let customers;
+  try {
+    customers = await fetchCustomers(isFirstRun ? null : state.lastCustomerId);
+  } catch (err) {
+    if (err.message && err.message.includes('INVALID_CURSOR')) {
+      console.warn('[customers] Cursor ' + state.lastCustomerId + ' is invalid - resetting to null (next poll = first-run).');
+      state.lastCustomerId = null;
+      return;
+    }
+    throw err;
+  }
   if (!customers.length) {
     console.log('[customers] No new customers.');
     return;
