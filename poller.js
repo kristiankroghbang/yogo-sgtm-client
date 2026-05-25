@@ -149,22 +149,52 @@ async function fetchBookings(from, to) {
   return fetchPaginated(url);
 }
 
+// --- E.164 phone formatting (Google EC + Meta CAPI require +<dial><number>) ---
+// YOGO usually delivers "+45 12345678", correct after stripping whitespace, but
+// edge cases ("00...", missing country code) are handled here. Default dial is
+// derived from the customer's country, falling back to DK.
+function formatPhoneE164(phoneRaw, countryIso) {
+  if (!phoneRaw) return null;
+  const phone = String(phoneRaw).replace(/[\s\-()]/g, '');
+  if (!phone) return null;
+
+  const dialCodes = {
+    dk: '45', se: '46', no: '47', de: '49', gb: '44', us: '1',
+    nl: '31', fr: '33', es: '34', it: '39', be: '32', ch: '41',
+    at: '43', fi: '358', pl: '48', ie: '353', is: '354'
+  };
+  const dial = dialCodes[(countryIso || 'dk').toLowerCase()] || '45';
+
+  if (phone.startsWith('+')) return phone;
+  if (phone.startsWith('00')) return '+' + phone.substring(2);
+  return '+' + dial + phone;
+}
+
 // --- Shared helper: build GA4 user_data block (Enhanced Conversions / Customer Match) ---
-// Downstream sGTM tags hash and transform this into vendor-specific shapes
-// (Google Ads, Meta CAPI, etc.). Raw PII here is intentional - hashing happens
-// at the sGTM tag boundary so each vendor gets the format it expects.
+// Canonical GA4 EC shape: first_name/last_name + street nested inside address.
+// _tag_mode "MANUAL" tells the sGTM EC tags the data is pre-formatted server-side
+// (prevents auto-collection/transform). PII is lowercased for hashing consistency
+// with Google/Meta (match rate drops otherwise). address1 + address2 are joined into
+// a single street field (GA4 EC has one street field; hashing fails if split).
 function buildUserData(customer) {
+  const street = [customer.address1, customer.address2]
+    .filter(Boolean)
+    .join(', ')
+    .toLowerCase() || null;
+  const countryIso = (customer.country || 'DK').toLowerCase();
+
   return {
-    email_address: customer.email || null,
-    phone_number: customer.phone ? customer.phone.replace(/\s/g, '') : null,
-    first_name: customer.firstName || null,
-    last_name: customer.lastName || null,
+    _tag_mode: 'MANUAL',
+    email_address: customer.email ? customer.email.toLowerCase() : null,
+    phone_number: formatPhoneE164(customer.phone, countryIso),
     address: {
-      address1: customer.address1 || null,
-      address2: customer.address2 || null,
-      city: customer.city || null,
+      first_name: customer.firstName ? customer.firstName.toLowerCase() : null,
+      last_name: customer.lastName ? customer.lastName.toLowerCase() : null,
+      street,
+      city: customer.city ? customer.city.toLowerCase() : null,
+      region: null,
       postal_code: customer.zipCode || null,
-      country: customer.country || 'DK'
+      country: countryIso
     }
   };
 }
