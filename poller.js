@@ -174,21 +174,39 @@ function round2(n) {
   return Math.round(n * 100) / 100;
 }
 
-// YOGO encodes order-level discount codes as orderItems with name
-// 'Rabatkode: "<code>".' and a negative price. Pull the code out so we can
-// send it event-level (GA4 `coupon` field) instead of leaving it in items.
-function extractCoupon(orderItems) {
-  for (const item of orderItems) {
-    const match = item.name && item.name.match(/Rabatkode:\s*"([^"]+)"/i);
-    if (match) {
-      return match[1];
-    }
-  }
-  return null;
+// YOGO encodes discounts as orderItems with a negative price:
+//  - promo codes, named "Rabatkode: <code>" (the code is delivered WITHOUT quotes), and
+//  - redeemed gift cards, named "Gavekort".
+// Pull these out of items[] and surface them event-level (GA4 `coupon`) + per-item
+// `discount` instead of leaving negative-price lines in the products array.
+const COUPON_NAME_RE = /rabatkode\s*:\s*"?(.+?)"?\.?\s*$/i;
+const GIFTCARD_NAME_RE = /gavekort/i;
+
+// A SOLD gift card is a positive line (real revenue) and stays a product;
+// only a REDEEMED gift card (negative price) counts as a discount.
+function isGiftcardLine(item) {
+  return !!(item && item.name && GIFTCARD_NAME_RE.test(item.name) && (item.totalPriceInclVat || 0) < 0);
 }
 
 function isCouponLine(item) {
-  return !!(item.name && /Rabatkode:\s*"[^"]+"/i.test(item.name));
+  return (!!(item && item.name && COUPON_NAME_RE.test(item.name))) || isGiftcardLine(item);
+}
+
+// Coupon label for the GA4 `coupon` field. A promo code takes precedence; a
+// redeemed gift card maps to "gavekort".
+function extractCoupon(orderItems) {
+  for (const item of orderItems) {
+    const match = item.name && item.name.match(COUPON_NAME_RE);
+    if (match) {
+      return match[1].trim();
+    }
+  }
+  for (const item of orderItems) {
+    if (isGiftcardLine(item)) {
+      return 'gavekort';
+    }
+  }
+  return null;
 }
 
 // --- Map a YOGO order to GA4 purchase event ---
