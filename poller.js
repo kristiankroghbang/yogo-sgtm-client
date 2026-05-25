@@ -172,28 +172,41 @@ function formatPhoneE164(phoneRaw, countryIso) {
 
 // --- Shared helper: build GA4 user_data block (Enhanced Conversions / Customer Match) ---
 // Canonical GA4 EC shape: first_name/last_name + street nested inside address.
-// _tag_mode "MANUAL" tells the sGTM EC tags the data is pre-formatted server-side
-// (prevents auto-collection/transform). PII is lowercased for hashing consistency
-// with Google/Meta (match rate drops otherwise). address1 + address2 are joined into
-// a single street field (GA4 EC has one street field; hashing fails if split).
+// _tag_mode "MANUAL" tells the sGTM EC tags the data is pre-formatted server-side, so the
+// tag hashes EXACTLY what we send with no normalization of its own. We must therefore
+// lowercase AND trim ourselves: Google/Meta normalize (lowercase + strip whitespace) before
+// hashing, and YOGO data often carries trailing spaces ("Jacob ", "Frederiksberg "). Without
+// trim the tag hashes "jacob " and misses Google's "jacob" -> lost match.
 function buildUserData(customer) {
-  const street = [customer.address1, customer.address2]
+  const norm = (v) => {
+    if (!v) return null;
+    const s = String(v).trim().toLowerCase();
+    return s || null;
+  };
+
+  // address1 + address2 are joined into a single street field (GA4 EC has one street field;
+  // hashing fails if split). Some customers have the same value in both (or address2 empty);
+  // dedupe avoids a "street, street" doublet that breaks address match.
+  const a1 = customer.address1 ? String(customer.address1).trim() : '';
+  const a2 = customer.address2 ? String(customer.address2).trim() : '';
+  const street = [a1, a2 && a2 !== a1 ? a2 : '']
     .filter(Boolean)
     .join(', ')
     .toLowerCase() || null;
-  const countryIso = (customer.country || 'DK').toLowerCase();
+
+  const countryIso = norm(customer.country) || 'dk';
 
   return {
     _tag_mode: 'MANUAL',
-    email_address: customer.email ? customer.email.toLowerCase() : null,
+    email_address: norm(customer.email),
     phone_number: formatPhoneE164(customer.phone, countryIso),
     address: {
-      first_name: customer.firstName ? customer.firstName.toLowerCase() : null,
-      last_name: customer.lastName ? customer.lastName.toLowerCase() : null,
+      first_name: norm(customer.firstName),
+      last_name: norm(customer.lastName),
       street,
-      city: customer.city ? customer.city.toLowerCase() : null,
+      city: norm(customer.city),
       region: null,
-      postal_code: customer.zipCode || null,
+      postal_code: customer.zipCode ? String(customer.zipCode).trim() : null,
       country: countryIso
     }
   };
