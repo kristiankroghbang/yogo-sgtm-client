@@ -70,6 +70,8 @@ The poller is a standard Node.js app with zero dependencies. It works on any pla
 - **[Fly.io](https://fly.io)** - Free tier with always-on machines.
 - **Any VPS** (DigitalOcean, Hetzner, etc.) - Run with `node poller.js` or as a systemd service.
 
+**Cloudflare Workers** is also viable since May 2026: YOGO originally served an invalid TLS certificate on the API domain, which made every Workers request fail with a 526 error. That certificate is fixed. The poller as written is a long-running Node process with filesystem state, so a Workers version is not a drop-in - it needs Cron Triggers for scheduling and KV or Durable Objects for cursor state - but the platform is no longer blocked.
+
 Set these environment variables:
 
 | Variable | Required | Description |
