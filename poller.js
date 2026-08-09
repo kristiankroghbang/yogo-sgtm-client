@@ -202,8 +202,10 @@ async function fetchMembershipTypes() {
 }
 
 // --- Fetch a customer's class passes (punch cards) for balance enrichment ---
+// expand=classPassType includes the type name + usageModel (fixed_count/unlimited)
+// so the balance can be split per pass type and unlimited passes don't count as 0 clips.
 async function fetchClassPasses(customerId) {
-  return fetchPaginated(BASE_URL + '/class-passes?customerId=' + customerId + '&limit=1000');
+  return fetchPaginated(BASE_URL + '/class-passes?customerId=' + customerId + '&expand=classPassType&limit=1000');
 }
 
 function formatPhoneE164(phoneRaw, countryIso) {
@@ -455,20 +457,53 @@ function mapCustomerToEvent(customer) {
   };
 }
 
-// --- Class pass balance per customer (from /class-passes) ---
+// --- Class pass balance per customer (from /class-passes?expand=classPassType) ---
 // classesAvailableForBooking is BOOKING capacity: classes that are booked but not
-// yet attended are already deducted. That is the right definition for "almost
-// empty" reminders. Only valid passes count (validUntil >= today, or null = not
-// yet activated); valid_until = the first upcoming expiry.
+// yet attended are already deducted. Only valid passes count (validUntil >= today,
+// or null = not yet activated). Customers can hold SEVERAL pass types at once
+// (e.g. yoga clips, sauna clips, an unlimited period pass), hence three layers:
+// - clips_remaining: summed ONLY over fixed-count passes. Unlimited passes have no
+//   counter and would otherwise read as 0 and mis-trigger "almost empty" flows.
+// - valid_until: earliest expiry among passes THAT STILL HOLD VALUE (clips left or
+//   unlimited) - the expiry of an empty pass is noise.
+// - types/passes: a flat type-name array for segmentation ("contains sauna") plus
+//   a nested per-pass array for emails and precise flow conditions.
+// Unlimited is decided by classPassType.usageModel; fallback when expand is missing:
+// classesAvailableForBooking == null is treated as unlimited.
 function buildClassPassSummary(passes) {
   const today = new Date().toISOString().slice(0, 10);
-  const active = (passes || []).filter(function (p) { return !p.validUntil || p.validUntil >= today; });
-  if (!active.length) return null;
-  const clips = active.reduce(function (sum, p) { return sum + (p.classesAvailableForBooking || 0); }, 0);
-  const expiries = active.map(function (p) { return p.validUntil; }).filter(Boolean).sort();
+  const valid = (passes || []).filter(function (p) { return !p.validUntil || p.validUntil >= today; });
+  if (!valid.length) return null;
+
+  const isUnlimited = function (p) {
+    if (p.classPassType && p.classPassType.usageModel) {
+      return p.classPassType.usageModel === 'unlimited';
+    }
+    return p.classesAvailableForBooking === null || p.classesAvailableForBooking === undefined;
+  };
+  const typeName = function (p) { return (p.classPassType && p.classPassType.name) || null; };
+
+  const fixed = valid.filter(function (p) { return !isUnlimited(p); });
+  const unlimited = valid.filter(isUnlimited);
+  const withValue = unlimited.concat(fixed.filter(function (p) { return (p.classesAvailableForBooking || 0) > 0; }));
+
+  const clips = fixed.reduce(function (sum, p) { return sum + (p.classesAvailableForBooking || 0); }, 0);
+  const expiries = withValue.map(function (p) { return p.validUntil; }).filter(Boolean).sort();
+
   return {
     clips_remaining: clips,
-    valid_until: expiries[0] || null
+    valid_until: expiries[0] || null,
+    has_unlimited: unlimited.length > 0,
+    types: [...new Set(withValue.map(typeName).filter(Boolean))],
+    passes: valid.map(function (p) {
+      return {
+        type_name: typeName(p),
+        usage_model: isUnlimited(p) ? 'unlimited' : 'fixed_count',
+        clips_remaining: isUnlimited(p) ? null : (p.classesAvailableForBooking || 0),
+        valid_until: p.validUntil || null,
+        start_date: p.startDate || null
+      };
+    })
   };
 }
 
@@ -483,6 +518,9 @@ async function attachClassPassSummary(event) {
     const summary = buildClassPassSummary(await fetchClassPasses(event.user_id));
     event.yogo_clips_remaining = summary ? summary.clips_remaining : 0;
     event.yogo_class_pass_valid_until = summary ? summary.valid_until : null;
+    event.yogo_has_unlimited_pass = summary ? summary.has_unlimited : false;
+    event.yogo_class_pass_types = summary ? summary.types : [];
+    event.yogo_class_passes = summary ? summary.passes : [];
   } catch (err) {
     console.error('[class-passes] Lookup failed for customer ' + event.user_id + ':', err.message);
   }

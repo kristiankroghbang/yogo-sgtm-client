@@ -41,7 +41,15 @@ The poller sends four event types:
 
 All events include `user_data` (email, phone, name, address) and all raw YOGO API fields prefixed with `yogo_`.
 
-**Class pass balance.** `purchase` and `booking` events also carry the customer's current punch card balance from `/class-passes`: `yogo_clips_remaining` (booking capacity across valid passes) and `yogo_class_pass_valid_until` (first upcoming expiry). Map these as profile properties in your email/CDP tag for "almost empty" and "expiring soon" segments.
+**Class pass balance.** `purchase` and `booking` events also carry the customer's current punch card balance from `/class-passes`. Customers can hold several pass types at once (e.g. yoga clips, sauna clips, an unlimited period pass), so the balance comes in three layers:
+
+- `yogo_clips_remaining` - booking capacity summed over valid fixed-count passes only (unlimited passes are excluded so they never read as 0 clips)
+- `yogo_class_pass_valid_until` - earliest expiry among passes that still hold value (clips left or unlimited)
+- `yogo_has_unlimited_pass` - whether the customer holds a valid unlimited pass (exclude these from "almost empty" flows)
+- `yogo_class_pass_types` - flat array of pass type names with remaining value, segmentable ("contains sauna")
+- `yogo_class_passes` - nested per-pass array (`type_name`, `usage_model`, `clips_remaining`, `valid_until`) for emails and precise flow conditions
+
+Map these as profile properties in your email/CDP tag for "almost empty" and "expiring soon" segments.
 
 ## Setup
 
