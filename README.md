@@ -1,6 +1,6 @@
 # YOGO Booking - sGTM Integration
 
-Server-side Google Tag Manager integration for the [YOGO Booking API](https://docs.api.yogobooking.com). Polls all three YOGO API endpoints and sends events to your sGTM container.
+Server-side Google Tag Manager integration for the [YOGO Booking API](https://docs.api.yogobooking.com). Polls the YOGO API (orders, customers, bookings, and memberships) and sends events to your sGTM container.
 
 Developed by [Kristian Krogh Bang](https://kristiankroghbang.com) and [Claude 4.6](https://claude.ai).
 
@@ -30,15 +30,18 @@ YOGO API  -->  Poller (Node.js)  -->  sGTM Container  -->  GA4 / Meta CAPI / etc
 
 ## Events
 
-The poller sends three event types:
+The poller sends four event types:
 
 - **`purchase`** - New paid orders with line items and customer data (from `/orders`)
 - **`booking`** - Class bookings with check-in/cancellation status (from `/bookings`)
 - **`new_customer`** - New registrations with booking and order history (from `/customers`)
+- **`membership_status`** - Membership status changes (from `/memberships`): new, active, paused, cancelled-but-running, and ended - including the reason a membership ended (`cancelled_by_customer`, `payment_failed`, `no_payment_method`, `cancelled_by_admin`), binding end date, and the next payment (date + amount). `payment_failed` / `no_payment_method` are the building blocks for dunning ("update your card") flows.
 
 **Important: orders vs. bookings.** An order (`purchase` event) is triggered when a customer makes an actual payment - buying a membership, a class pass, or similar. A booking (`booking` event) is when a customer reserves a spot in a class. This often happens without a new payment, for example when using an existing membership or class pass. A single order (e.g. a 10-class pass) can lead to many bookings over time, each without generating a new order.
 
 All events include `user_data` (email, phone, name, address) and all raw YOGO API fields prefixed with `yogo_`.
+
+**Class pass balance.** `purchase` and `booking` events also carry the customer's current punch card balance from `/class-passes`: `yogo_clips_remaining` (booking capacity across valid passes) and `yogo_class_pass_valid_until` (first upcoming expiry). Map these as profile properties in your email/CDP tag for "almost empty" and "expiring soon" segments.
 
 ## Setup
 
@@ -68,12 +71,13 @@ Set these environment variables:
 | `SGTM_SECRET` | Yes | Must match the shared secret in your sGTM client |
 | `POLL_INTERVAL` | No | Seconds between polls (default: 60) |
 | `SKIP_INITIAL` | No | Set to `true` to skip paginating through historical data on first run. The poller will still fetch current bookings to build its deduplication set, but won't send them to sGTM. Recommended for studios with many existing records. |
+| `BACKFILL_MEMBERSHIPS` | No | Set to `true` to send a `membership_status` event for ALL live memberships on first run - a one-time backfill so downstream profiles get the membership status from day one. State resets on every redeploy, so remove the flag again after the backfill, or every deploy will re-send all membership events. |
 
 ### 3. Create tags in sGTM
 
 All YOGO fields are available as **Event Data** variables:
 
-- `{{Event Data - event_name}}` - `purchase`, `booking`, or `new_customer`
+- `{{Event Data - event_name}}` - `purchase`, `booking`, `new_customer`, or `membership_status`
 - `{{Event Data - value}}` - Order total (DKK)
 - `{{Event Data - yogo_order_id}}` - YOGO order ID
 - `{{Event Data - user_data.email_address}}` - Customer email
@@ -82,6 +86,7 @@ All YOGO fields are available as **Event Data** variables:
 
 - **Orders and customers** use cursor-based pagination (numeric ID). The poller stores the last seen ID and only fetches records after it. On first run, existing records are skipped to prevent flooding sGTM with historical data.
 - **Bookings** work differently. The YOGO `/bookings` endpoint filters by **class start time**, not when the booking was made. A narrow rolling window would miss bookings for future classes and cause duplicates when a class falls inside the window. Instead, the poller fetches a wide window (now to 30 days ahead) on every poll and deduplicates using a stored set of previously seen booking IDs. IDs for past classes are pruned automatically to prevent unbounded growth.
+- **Memberships** have no "changed since" cursor, so the poller snapshots the live statuses (`pending`, `active`, `paused`, `cancelled_running` - a small set) every poll and diffs against the previous snapshot. A membership that disappears from the live lists has ended and is looked up individually to get `endedReason` on the event. The `ended` list itself is never fetched (it grows forever).
 - **Rate limiting** respected (100 req/min, Retry-After header)
 - **30s request timeout** via AbortController
 - **Zero dependencies** - only Node.js built-ins
@@ -102,6 +107,8 @@ All YOGO fields are available as **Event Data** variables:
 - Revenue attribution and dashboards
 - Remarketing audiences based on booking behavior
 - Customer data enrichment (CRM, email platforms)
+- Churn and dunning flows (cancelled memberships, failed payments, pauses)
+- Punch card reminders ("2 clips left", "expires in 14 days")
 
 ## Resources
 

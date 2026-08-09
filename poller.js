@@ -1,13 +1,14 @@
 /**
  * YOGO API -> sGTM Poller
  *
- * Always-on Node.js poller that fetches data from all three YOGO API
- * endpoints (/orders, /customers, /bookings) and sends events to a
- * server-side Google Tag Manager container.
+ * Always-on Node.js poller that fetches data from the YOGO API
+ * endpoints (/orders, /customers, /bookings, /memberships) and sends
+ * events to a server-side Google Tag Manager container.
  *
  * Follows the YOGO API documentation exactly:
  * - Cursor-based pagination for /orders and /customers (numeric ID)
  * - Date-range + cursor pagination for /bookings (composite cursor)
+ * - Status-filtered snapshot + diff for /memberships (status changes)
  * - Rate limiting with Retry-After header (429)
  * - X-API-KEY authentication
  * - Max 1000 records per page
@@ -16,11 +17,16 @@
  * Designed to run on Railway, Render, Fly.io, or any always-on host.
  *
  * Environment variables:
- *   YOGO_API_KEY   - API key for YOGO booking API (required)
- *   SGTM_URL       - Base URL to sGTM, e.g. https://sst.yourdomain.com (required)
- *   SGTM_SECRET    - Shared secret for sGTM client authentication (required)
- *   POLL_INTERVAL  - Seconds between each poll cycle (default: 60)
- *   PORT           - Port for health check server (default: 3000)
+ *   YOGO_API_KEY         - API key for YOGO booking API (required)
+ *   SGTM_URL             - Base URL to sGTM, e.g. https://sst.yourdomain.com (required)
+ *   SGTM_SECRET          - Shared secret for sGTM client authentication (required)
+ *   POLL_INTERVAL        - Seconds between each poll cycle (default: 60)
+ *   PORT                 - Port for health check server (default: 3000)
+ *   BACKFILL_MEMBERSHIPS - 'true' = send a membership_status event for ALL live
+ *                          memberships on first run (one-time profile backfill).
+ *                          State lives in /tmp and resets on every deploy, so
+ *                          remove the flag again after the backfill - otherwise
+ *                          every deploy re-sends all membership events.
  *
  * Developed by Kristian Krogh Bang and Claude 4.6.
  * https://github.com/kristiankroghbang
@@ -40,6 +46,12 @@ const BASE_URL = 'https://api.yogobooking.com';
 const FETCH_TIMEOUT_MS = 30000;
 const BOOKING_WINDOW_DAYS = 30;
 const SKIP_INITIAL = process.env.SKIP_INITIAL === 'true';
+const BACKFILL_MEMBERSHIPS = process.env.BACKFILL_MEMBERSHIPS === 'true';
+
+// Memberships in these statuses are "live" and diffed for changes every poll.
+// 'ended' is never fetched as a list (it grows forever) - a membership that
+// disappears from the live lists is looked up individually to get endedReason.
+const LIVE_MEMBERSHIP_STATUSES = ['pending', 'active', 'paused', 'cancelled_running'];
 
 // --- Startup validation - fail fast if misconfigured ---
 function validateEnv() {
@@ -61,7 +73,9 @@ function loadState() {
     return {
       lastOrderId: null,
       lastCustomerId: null,
-      seenBookingIds: []
+      seenBookingIds: [],
+      // { membershipId: status } snapshot of live memberships. null = first run.
+      memberships: null
     };
   }
 }
@@ -153,6 +167,45 @@ async function fetchBookings(from, to) {
 // YOGO usually delivers "+45 12345678", correct after stripping whitespace, but
 // edge cases ("00...", missing country code) are handled here. Default dial is
 // derived from the customer's country, falling back to DK.
+// --- Single-resource GET with the same 429 handling as fetchPaginated ---
+// Used for lookups of single resources (customer, ended membership). 404 -> null
+// (e.g. a GDPR-deleted customer) instead of failing the whole poll cycle.
+async function fetchOne(url) {
+  while (true) {
+    const res = await fetchWithTimeout(url, {
+      headers: { 'X-API-KEY': YOGO_API_KEY }
+    });
+    if (res.status === 429) {
+      const retryAfter = parseInt(res.headers.get('Retry-After') || '60', 10);
+      console.log('Rate limited. Waiting ' + retryAfter + ' seconds...');
+      await new Promise(resolve => setTimeout(resolve, retryAfter * 1000));
+      continue;
+    }
+    if (res.status === 404) return null;
+    if (!res.ok) {
+      const errBody = await res.text();
+      throw new Error('YOGO API error: ' + res.status + ' ' + res.statusText + ' - ' + errBody);
+    }
+    const json = await res.json();
+    return json.data || json;
+  }
+}
+
+// --- Fetch memberships filtered by status ---
+async function fetchMemberships(status) {
+  return fetchPaginated(BASE_URL + '/memberships?status=' + status + '&limit=1000');
+}
+
+// --- Fetch membership types (small product catalog, for typeId -> name) ---
+async function fetchMembershipTypes() {
+  return fetchPaginated(BASE_URL + '/membership-types?limit=1000');
+}
+
+// --- Fetch a customer's class passes (punch cards) for balance enrichment ---
+async function fetchClassPasses(customerId) {
+  return fetchPaginated(BASE_URL + '/class-passes?customerId=' + customerId + '&limit=1000');
+}
+
 function formatPhoneE164(phoneRaw, countryIso) {
   if (!phoneRaw) return null;
   const phone = String(phoneRaw).replace(/[\s\-()]/g, '');
@@ -402,6 +455,65 @@ function mapCustomerToEvent(customer) {
   };
 }
 
+// --- Class pass balance per customer (from /class-passes) ---
+// classesAvailableForBooking is BOOKING capacity: classes that are booked but not
+// yet attended are already deducted. That is the right definition for "almost
+// empty" reminders. Only valid passes count (validUntil >= today, or null = not
+// yet activated); valid_until = the first upcoming expiry.
+function buildClassPassSummary(passes) {
+  const today = new Date().toISOString().slice(0, 10);
+  const active = (passes || []).filter(function (p) { return !p.validUntil || p.validUntil >= today; });
+  if (!active.length) return null;
+  const clips = active.reduce(function (sum, p) { return sum + (p.classesAvailableForBooking || 0); }, 0);
+  const expiries = active.map(function (p) { return p.validUntil; }).filter(Boolean).sort();
+  return {
+    clips_remaining: clips,
+    valid_until: expiries[0] || null
+  };
+}
+
+// Looks up the customer's class pass balance and sets it top-level on the event
+// so an email/CDP tag can map it as a profile property. A SUCCESSFUL lookup with
+// no valid passes sends 0/null so a previously positive balance does not go stale
+// downstream when the last pass expires. Only on lookup FAILURE are the fields
+// omitted (preserving the existing profile value).
+async function attachClassPassSummary(event) {
+  if (!event.user_id) return;
+  try {
+    const summary = buildClassPassSummary(await fetchClassPasses(event.user_id));
+    event.yogo_clips_remaining = summary ? summary.clips_remaining : 0;
+    event.yogo_class_pass_valid_until = summary ? summary.valid_until : null;
+  } catch (err) {
+    console.error('[class-passes] Lookup failed for customer ' + event.user_id + ':', err.message);
+  }
+}
+
+// --- Map a membership status change to an sGTM membership_status event ---
+// yogo_membership_status / yogo_membership_type sit top-level so a Klaviyo-style
+// tag can map them as profile properties. Full details in the flat yogo_* fields.
+function mapMembershipToEvent(membership, previousStatus, customer, typeName) {
+  const c = customer || {};
+  return {
+    event_name: 'membership_status',
+    source: 'yogo_api',
+    user_id: c.id ? String(c.id) : (membership.customerId ? String(membership.customerId) : null),
+    user_data: buildUserData(c),
+    yogo_membership_status: membership.status,
+    yogo_membership_type: typeName || null,
+    yogo_membership_id: membership.id,
+    yogo_membership_previous_status: previousStatus || null,
+    yogo_membership_type_id: membership.membershipTypeId,
+    yogo_membership_start_date: membership.startDate || null,
+    yogo_membership_cancelled_from_date: membership.cancelledFromDate || null,
+    yogo_membership_binding_end_date: membership.bindingEndDate || null,
+    // ended_reason: cancelled_by_customer / payment_failed / no_payment_method /
+    // cancelled_by_admin. payment_failed + no_payment_method enable dunning flows.
+    yogo_membership_ended_reason: membership.endedReason || null,
+    yogo_membership_next_payment_date: membership.nextPayment ? membership.nextPayment.date : null,
+    yogo_membership_next_payment_amount: membership.nextPayment ? membership.nextPayment.amount : null
+  };
+}
+
 // --- Send event to sGTM (with timeout) ---
 async function sendToSgtm(eventData) {
   const endpoint = SGTM_URL + '/yogo-' + eventData.event_name;
@@ -460,6 +572,8 @@ async function pollOrders(state) {
 
   for (const order of paidOrders) {
     const event = mapOrderToEvent(order);
+    // Include class pass balance on purchase (updates the profile when a punch card is bought).
+    await attachClassPassSummary(event);
     try {
       await sendToSgtm(event);
       console.log('[orders] Sent order #' + event.transaction_id + ' (' + event.value + ' DKK) to sGTM');
@@ -568,6 +682,9 @@ async function pollBookings(state) {
 
   for (const booking of newBookings) {
     const event = mapBookingToEvent(booking);
+    // Include class pass balance on booking - booking is the moment the balance
+    // changes, so the profile's yogo_clips_remaining stays current here.
+    await attachClassPassSummary(event);
     // Always mark as seen to prevent infinite retry loops.
     // Failed sends are logged but not retried every poll cycle.
     seenSet.add(booking.id);
@@ -588,8 +705,111 @@ async function pollBookings(state) {
   console.log('[bookings] Tracking ' + state.seenBookingIds.length + ' seen booking IDs.');
 }
 
+// --- Poll memberships (snapshot + diff) ---
+// /memberships has no "changed since" cursor, so every poll fetches the live
+// statuses (pending/active/paused/cancelled_running - a small set) and diffs
+// against the previous snapshot. An ID that disappears from the live lists has
+// ended -> individual lookup to get endedReason (payment_failed etc.) on the event.
+async function pollMemberships(state) {
+  const current = {};
+  for (const status of LIVE_MEMBERSHIP_STATUSES) {
+    const rows = await fetchMemberships(status);
+    for (const m of rows) current[m.id] = m;
+  }
+
+  const stored = state.memberships;
+  const isFirstRun = stored === null || stored === undefined;
+  console.log('[memberships] Polling... (' + Object.keys(current).length + ' live, ' + (isFirstRun ? 'FIRST RUN' : Object.keys(stored).length + ' in snapshot') + ')');
+
+  // Collect changes: new memberships, status transitions, and endings.
+  const changes = [];
+  if (isFirstRun) {
+    if (BACKFILL_MEMBERSHIPS) {
+      // One-time backfill: send current status for every live membership so
+      // downstream profiles get yogo_membership_status from day one.
+      for (const m of Object.values(current)) changes.push({ membership: m, previous: null });
+      console.log('[memberships] BACKFILL: sending status for ' + changes.length + ' live memberships.');
+    } else {
+      state.memberships = Object.fromEntries(Object.entries(current).map(function (e) { return [e[0], e[1].status]; }));
+      console.log('[memberships] First run: snapshot saved, no events sent.');
+      return;
+    }
+  } else {
+    for (const [id, m] of Object.entries(current)) {
+      const prev = stored[id];
+      if (!prev) {
+        changes.push({ membership: m, previous: null });
+      } else if (prev !== m.status) {
+        changes.push({ membership: m, previous: prev });
+      }
+    }
+    for (const [id, prevStatus] of Object.entries(stored)) {
+      if (!current[id]) {
+        // Gone from the live lists -> look up for status=ended + endedReason.
+        // null (404/deleted) is skipped.
+        const ended = await fetchOne(BASE_URL + '/memberships/' + id);
+        if (ended && ended.status === 'ended') {
+          changes.push({ membership: ended, previous: prevStatus });
+        }
+      }
+    }
+  }
+
+  if (changes.length) {
+    // typeId -> name for yogo_membership_type (small catalog, fetched only on changes).
+    let typeMap = new Map();
+    try {
+      const types = await fetchMembershipTypes();
+      typeMap = new Map(types.map(function (t) { return [t.id, t.name]; }));
+    } catch (err) {
+      console.error('[memberships] Could not fetch membership types:', err.message);
+    }
+
+    console.log('[memberships] ' + changes.length + ' status changes.');
+    for (const { membership, previous } of changes) {
+      // Customer lookup for user_data (email is the profile key downstream).
+      let customer = null;
+      try {
+        customer = await fetchOne(BASE_URL + '/customers/' + membership.customerId);
+      } catch (err) {
+        console.error('[memberships] Customer lookup failed for ' + membership.customerId + ':', err.message);
+      }
+      const event = mapMembershipToEvent(membership, previous, customer, typeMap.get(membership.membershipTypeId));
+      try {
+        await sendToSgtm(event);
+        console.log('[memberships] Sent membership #' + membership.id + ' (' + (previous || 'new') + ' -> ' + membership.status + (membership.endedReason ? ', ' + membership.endedReason : '') + ') to sGTM');
+      } catch (err) {
+        // No retry (same principle as bookings): the snapshot is updated below regardless.
+        console.error('[memberships] Error sending membership #' + membership.id + ':', err.message);
+      }
+    }
+  } else if (!isFirstRun) {
+    console.log('[memberships] No changes.');
+  }
+
+  state.memberships = Object.fromEntries(Object.entries(current).map(function (e) { return [e[0], e[1].status]; }));
+}
+
 // --- Main poll loop ---
+// In-progress guard: if a cycle takes longer than POLL_INTERVAL (e.g. timeouts on
+// customer lookups), setInterval must not start another one on top - two concurrent
+// cycles would read the same snapshot and send membership_status events twice.
+let pollInProgress = false;
+
 async function poll() {
+  if (pollInProgress) {
+    console.log('[poll] Previous cycle still running - skipping this one.');
+    return;
+  }
+  pollInProgress = true;
+  try {
+    await runPollCycle();
+  } finally {
+    pollInProgress = false;
+  }
+}
+
+async function runPollCycle() {
   const state = loadState();
 
   // SKIP_INITIAL: If set and state is empty, mark as initialized without
@@ -622,6 +842,12 @@ async function poll() {
     console.error('[bookings] Poll error:', err.message, err.cause || '');
   }
 
+  try {
+    await pollMemberships(state);
+  } catch (err) {
+    console.error('[memberships] Poll error:', err.message, err.cause || '');
+  }
+
   saveState(state);
 }
 
@@ -636,7 +862,7 @@ const server = http.createServer((req, res) => {
 validateEnv();
 
 server.listen(PORT, () => {
-  console.log('YOGO -> sGTM poller starting (orders + customers + bookings)');
+  console.log('YOGO -> sGTM poller starting (orders + customers + bookings + memberships)');
   console.log('Health check on port ' + PORT);
   console.log('Poll interval: ' + (POLL_INTERVAL / 1000) + 's');
   console.log('sGTM base URL: ' + SGTM_URL);
