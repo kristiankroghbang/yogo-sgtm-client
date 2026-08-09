@@ -813,6 +813,9 @@ async function pollMemberships(state) {
         console.error('[memberships] Customer lookup failed for ' + membership.customerId + ':', err.message);
       }
       const event = mapMembershipToEvent(membership, previous, customer, typeMap.get(membership.membershipTypeId));
+      // Include the class pass balance so membership events update the same
+      // profile properties as purchase/booking.
+      await attachClassPassSummary(event);
       try {
         await sendToSgtm(event);
         console.log('[memberships] Sent membership #' + membership.id + ' (' + (previous || 'new') + ' -> ' + membership.status + (membership.endedReason ? ', ' + membership.endedReason : '') + ') to sGTM');
