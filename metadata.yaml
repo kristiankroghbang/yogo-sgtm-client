@@ -1,7 +1,7 @@
 homepage: "https://kristiankroghbang.com"
 documentation: "https://github.com/kristiankroghbang/yogo-sgtm-client#setup"
 versions:
-  - sha: e81cbd875445599af04b8c09ca92115ac888b398
+  - sha: d0986958190940cc9eef375413282e844219cca3
     changeNotes: "Add Community Template Gallery fields: categories, brand icon, ToS acceptance."
   - sha: 8c4d132e67677389711d2394fcec5e36b4bee52b
     changeNotes: "Initial release - YOGO Booking sGTM client for orders, bookings, and customers."
