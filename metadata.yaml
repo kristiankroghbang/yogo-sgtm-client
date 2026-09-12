@@ -1,6 +1,8 @@
 homepage: "https://sementa.dk"
 documentation: "https://github.com/kristiankroghbang/yogo-sgtm-client#setup"
 versions:
+  - sha: 0764e8dc2ddc5e36979dabad1f0f0cbfb3511552
+    changeNotes: "Rebrand to Sementa: brand name, icon and homepage. No functional changes."
   - sha: d0986958190940cc9eef375413282e844219cca3
     changeNotes: "Add Community Template Gallery fields: categories, brand icon, ToS acceptance."
   - sha: 8c4d132e67677389711d2394fcec5e36b4bee52b
