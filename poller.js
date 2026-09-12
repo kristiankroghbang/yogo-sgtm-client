@@ -28,8 +28,8 @@
  *                          remove the flag again after the backfill - otherwise
  *                          every deploy re-sends all membership events.
  *
- * Developed by Kristian Krogh Bang and Claude 4.6.
- * https://github.com/kristiankroghbang
+ * Developed by Sementa.
+ * https://sementa.dk
  */
 
 const http = require('http');

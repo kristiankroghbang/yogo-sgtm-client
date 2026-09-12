@@ -2,7 +2,7 @@
 
 Server-side Google Tag Manager integration for the [YOGO Booking API](https://docs.api.yogobooking.com). Polls the YOGO API (orders, customers, bookings, and memberships) and sends events to your sGTM container.
 
-Developed by [Kristian Krogh Bang](https://kristiankroghbang.com) and [Claude 4.6](https://claude.ai).
+Developed by [Sementa](https://sementa.dk).
 
 ## The problem
 
